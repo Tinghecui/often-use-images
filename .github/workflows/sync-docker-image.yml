@@ -1,0 +1,63 @@
+naon:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # 允许手动触发Docker Image to Aliyun
+
+on:
+  push:
+    branches: [ main ]
+  # pull_request:
+  #   branches: [ main ]
+  # workflow_dispatch:  # 允许手动触发
+  # schedule:
+  #   # 每天UTC 2点运行（北京时间10点）
+  #   - cron: '0 2 * * *'
+
+jobs:
+  sync-image:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Log in to Aliyun Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: crpi-un9cbhka4snaau4v.cn-shanghai.personal.cr.aliyuncs.com
+        username: ${{ secrets.ALIYUN_USERNAME }}
+        password: ${{ secrets.ALIYUN_PASSWORD }}
+    
+    - name: Pull image from Docker Hub
+      run: |
+        echo "正在从Docker Hub拉取镜像..."
+        docker pull vllm/vllm-openai:gptoss
+    
+    - name: Tag image for Aliyun
+      run: |
+        echo "正在为阿里云重新标记镜像..."
+        docker tag vllm/vllm-openai:gptoss crpi-un9cbhka4snaau4v.cn-shanghai.personal.cr.aliyuncs.com/ruiyuan2025/gptoss:latest
+        docker tag vllm/vllm-openai:gptoss crpi-un9cbhka4snaau4v.cn-shanghai.personal.cr.aliyuncs.com/ruiyuan2025/gptoss:$(date +%Y%m%d)
+    
+    - name: Push image to Aliyun
+      run: |
+        echo "正在推送镜像到阿里云..."
+        docker push crpi-un9cbhka4snaau4v.cn-shanghai.personal.cr.aliyuncs.com/ruiyuan2025/gptoss:latest
+        docker push crpi-un9cbhka4snaau4v.cn-shanghai.personal.cr.aliyuncs.com/ruiyuan2025/gptoss:$(date +%Y%m%d)
+    
+    - name: Clean up
+      run: |
+        echo "清理本地镜像..."
+        docker rmi vllm/vllm-openai:gptoss || true
+        docker rmi crpi-un9cbhka4snaau4v.cn-shanghai.personal.cr.aliyuncs.com/ruiyuan2025/gptoss:latest || true
+        docker rmi crpi-un9cbhka4snaau4v.cn-shanghai.personal.cr.aliyuncs.com/ruiyuan2025/gptoss:$(date +%Y%m%d) || true
+        
+    - name: Output summary
+      run: |
+        echo "✅ 镜像同步完成！"
+        echo "📦 源镜像: vllm/vllm-openai:gptoss"
+        echo "🎯 目标镜像: crpi-un9cbhka4snaau4v.cn-shanghai.personal.cr.aliyuncs.com/ruiyuan2025/gptoss:latest"
+        echo "📅 日期标签: crpi-un9cbhka4snaau4v.cn-shanghai.personal.cr.aliyuncs.com/ruiyuan2025/gptoss:$(date +%Y%m%d)"
