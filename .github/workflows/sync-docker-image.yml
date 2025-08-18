@@ -1,17 +1,9 @@
-naon:
-  push:
-    branches: [ main ]
-  workflow_dispatch:  # 允许手动触发Docker Image to Aliyun
+name: Sync Docker Image to Aliyun
 
 on:
   push:
     branches: [ main ]
-  # pull_request:
-  #   branches: [ main ]
-  # workflow_dispatch:  # 允许手动触发
-  # schedule:
-  #   # 每天UTC 2点运行（北京时间10点）
-  #   - cron: '0 2 * * *'
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
   sync-image:
