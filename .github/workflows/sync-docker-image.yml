@@ -21,20 +21,28 @@ jobs:
         echo "清理磁盘空间..."
         # 显示磁盘使用情况
         df -h
-        
+
         # 清理不需要的软件包和缓存
         sudo apt-get clean
         sudo apt-get autoremove -y
-        
+
         # 清理Docker缓存
         docker system prune -af --volumes || true
-        
-        # 删除不需要的大型软件包
+
+        # 删除不需要的大型软件包（更激进的清理）
         sudo rm -rf /usr/share/dotnet || true
         sudo rm -rf /usr/local/lib/android || true
         sudo rm -rf /opt/ghc || true
         sudo rm -rf /opt/hostedtoolcache/CodeQL || true
-        
+        sudo rm -rf /usr/local/share/boost || true
+        sudo rm -rf /usr/local/graalvm || true
+        sudo rm -rf /usr/local/.ghcup || true
+        sudo rm -rf /usr/share/swift || true
+
+        # 清理apt缓存
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/* || true
+
         # 再次显示磁盘使用情况
         echo "清理后的磁盘使用情况："
         df -h
@@ -63,17 +71,73 @@ jobs:
     - name: Pull image from Docker Hub
       run: |
         echo "正在从Docker Hub拉取镜像..."
-        echo "镜像大小预计较大，需要一些时间..."
-        
+        echo "镜像大小预计较大（16.5GB），需要较长时间..."
+
         # 检查可用磁盘空间
         echo "当前磁盘使用情况："
         df -h
-        
-        # 拉取镜像
-        docker pull vllm/vllm-openai:gptoss
-        
-        echo "镜像拉取完成，检查镜像信息："
+        AVAILABLE_GB=$(df -BG / | tail -1 | awk '{print $4}' | sed 's/G//')
+        echo "可用空间: ${AVAILABLE_GB}GB"
+
+        if [ "$AVAILABLE_GB" -lt 20 ]; then
+          echo "⚠️ 警告: 可用空间小于20GB，可能不足"
+        fi
+
+        # 定义重试拉取函数
+        retry_pull() {
+          local image=$1
+          local max_attempts=3
+          local attempt=1
+
+          while [ $attempt -le $max_attempts ]; do
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "尝试拉取镜像 (第 $attempt/$max_attempts 次)..."
+            echo "开始时间: $(date '+%Y-%m-%d %H:%M:%S')"
+
+            # 使用timeout命令限制拉取时间（30分钟）
+            if timeout 1800 docker pull "$image"; then
+              echo "✅ 镜像拉取成功！"
+              echo "完成时间: $(date '+%Y-%m-%d %H:%M:%S')"
+              return 0
+            else
+              EXIT_CODE=$?
+              echo "❌ 镜像拉取失败（退出码: $EXIT_CODE）"
+
+              if [ $EXIT_CODE -eq 124 ]; then
+                echo "⚠️ 拉取超时（超过30分钟）"
+              fi
+
+              if [ $attempt -lt $max_attempts ]; then
+                echo "等待30秒后重试..."
+                sleep 30
+
+                # 清理可能的不完整镜像
+                docker system prune -af || true
+
+                echo "重试前磁盘空间:"
+                df -h
+              fi
+
+              attempt=$((attempt + 1))
+            fi
+          done
+
+          echo "❌ 镜像拉取失败，已达到最大重试次数"
+          echo "可能的原因:"
+          echo "  1. Docker Hub 速率限制"
+          echo "  2. 网络连接问题"
+          echo "  3. 磁盘空间不足"
+          echo "  4. 镜像不存在或已被删除"
+          return 1
+        }
+
+        # 执行拉取
+        retry_pull "vllm/vllm-openai:gptoss"
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "镜像信息："
         docker images vllm/vllm-openai:gptoss
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
     - name: Tag image for Aliyun
       run: |
@@ -87,34 +151,53 @@ jobs:
     - name: Push image to Aliyun with retry
       run: |
         echo "正在推送镜像到阿里云..."
-        
-        # 定义重试函数
+
+        # 定义重试函数（指数退避）
         retry_push() {
           local image=$1
-          local max_attempts=3
+          local max_attempts=4
           local attempt=1
-          
+          local wait_time=2
+
           while [ $attempt -le $max_attempts ]; do
-            echo "尝试推送 $image (第 $attempt 次)..."
-            if docker push "$image"; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "尝试推送 $image (第 $attempt/$max_attempts 次)..."
+            echo "开始时间: $(date '+%Y-%m-%d %H:%M:%S')"
+
+            if timeout 1800 docker push "$image"; then
               echo "✅ $image 推送成功"
+              echo "完成时间: $(date '+%Y-%m-%d %H:%M:%S')"
               return 0
             else
-              echo "❌ $image 推送失败，等待重试..."
-              sleep 10
+              EXIT_CODE=$?
+              echo "❌ $image 推送失败（退出码: $EXIT_CODE）"
+
+              if [ $EXIT_CODE -eq 124 ]; then
+                echo "⚠️ 推送超时（超过30分钟）"
+              fi
+
+              if [ $attempt -lt $max_attempts ]; then
+                echo "等待 ${wait_time}s 后重试..."
+                sleep $wait_time
+                wait_time=$((wait_time * 2))  # 指数退避: 2s, 4s, 8s
+              fi
+
               attempt=$((attempt + 1))
             fi
           done
-          
+
           echo "❌ $image 推送失败，已达到最大重试次数"
           return 1
         }
-        
+
         # 推送latest标签
         retry_push "crpi-un9cbhka4snaau4v.cn-shanghai.personal.cr.aliyuncs.com/ruiyuan2025/gptoss:latest"
-        
+
         # 推送日期标签
         retry_push "crpi-un9cbhka4snaau4v.cn-shanghai.personal.cr.aliyuncs.com/ruiyuan2025/gptoss:$(date +%Y%m%d)"
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "✅ 所有镜像推送完成"
     
     - name: Clean up
       run: |
